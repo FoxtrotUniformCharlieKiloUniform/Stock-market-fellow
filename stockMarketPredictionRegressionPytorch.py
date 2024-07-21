@@ -87,44 +87,43 @@ batch_size = 64
 num_epochs = 3
 input_size = 71
 
-class stonks(nn.Module):
+class miniLayer(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers):
-        super(stonks, self).__init__()
+        super(miniLayer, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-
-        # layers
-        #self.pool = nn.MaxPool1d(kernel_size = 2)   #same formula to keep the dimension size
         self.conv = nn.Conv1d(in_channels = input_size, out_channels = input_size,kernel_size = (3), padding = "same")  
         self.LSTMInitial = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
         self.fcMid = nn.Linear(hidden_size, input_size)
 
-        self.fcLast = nn.Linear(input_size, 1)
-    
+     
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, self.hidden_size).to(device)
         c0 = torch.zeros(self.num_layers, self.hidden_size).to(device)
-        print(x.shape)
-
         x = x.permute(1,0)
-        print(x.shape)
-
         x = F.relu(self.conv(x))
-        print(x.shape)
-
-        # Forward propagate LSTM
         x = x.permute(1,0)
-        print(x.shape)
         x, _ = self.LSTMInitial(x, (h0, c0))
-        #fc
         x = self.fcMid(x)
-
-        print(x.shape)
+        return x
+    
+class stonks(nn.Module):
+    def __init__(self):
+        super(stonks, self).__init__()
+        self.p1 = miniLayer(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+        self.p2 = miniLayer(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+        
+        self.fcLast = nn.Linear(input_size, 1)
+    def forward(self,x):
+        x = self.p1(x)
+        x = self.p2(x)
         out = self.fcLast(x)
         return out
+    
+    
 
 # Instantiate the model and move it to the GPU
-model = stonks(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers).to(device)
+model = stonks().to(device)
 
 # Define loss function and optimizer
 criterion = nn.MSELoss()
