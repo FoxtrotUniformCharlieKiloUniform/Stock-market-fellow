@@ -110,13 +110,13 @@ class miniLayer(nn.Module):
 class stonks(nn.Module):
     def __init__(self):
         super(stonks, self).__init__()
-        self.p1 = miniLayer(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
-        self.p2 = miniLayer(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
-        
+        self.layersList = nn.ModuleList([miniLayer(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers) for i in range(10)])
+
         self.fcLast = nn.Linear(input_size, 1)
+
     def forward(self,x):
-        x = self.p1(x)
-        x = self.p2(x)
+        for i,l in enumerate(self.layersList):
+            x = self.layersList[i//3](x) + self.layersList[i//2](x) + l(x)
         out = self.fcLast(x)
         return out
     
@@ -130,7 +130,7 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # Training
-epochs = 4
+epochs = 400
 for epoch in range(epochs):
     model.train()
     optimizer.zero_grad()
