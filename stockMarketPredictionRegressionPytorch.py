@@ -93,17 +93,28 @@ class stonks(nn.Module):
         self.num_layers = num_layers
 
         # layers
+        
+        #self.pool = nn.MaxPool1d(kernel_size = 2)   #same formula to keep the dimension size
+        self.conv = nn.Conv1d(in_channels = input_size, out_channels = input_size,kernel_size = (3), padding = "same")  
         self.LSTMInitial = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
         self.fcLast = nn.Linear(hidden_size, 1)
     
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, self.hidden_size).to(device)
         c0 = torch.zeros(self.num_layers, self.hidden_size).to(device)
-        #print(x.shape)
+        print(x.shape)
+
+        x = x.permute(1,0)
+        print(x.shape)
+
+        x = F.relu(self.conv(x))
+        print(x.shape)
+
         # Forward propagate LSTM
+        x = x.permute(1,0)
+        print(x.shape)
         out, _ = self.LSTMInitial(x, (h0, c0))
         #print(out.shape)
-        # Decode the hidden state of the last time step
         out = self.fcLast(out)
         return out
 
@@ -145,8 +156,8 @@ def check_accuracy(loader, model):
     model.train()
     return torch.mean(torch.true_divide(predictions,y_test))
 
-print(f"Accuracy on training set: {check_accuracy(X_train, model) * 100:.2f}")
-print(f"Accuracy on test set: {check_accuracy(X_test, model) * 100:.2f}")
+print(f"Accuracy on training set: {check_accuracy(X_train, model) * 100:.2f}%")
+print(f"Accuracy on test set: {check_accuracy(X_test, model) * 100:.2f}%")
 
 
 with torch.no_grad():
