@@ -85,6 +85,7 @@ num_layers = 2
 learning_rate = 0.005
 batch_size = 64
 num_epochs = 3
+input_size = 71
 
 class stonks(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers):
@@ -93,11 +94,12 @@ class stonks(nn.Module):
         self.num_layers = num_layers
 
         # layers
-        
         #self.pool = nn.MaxPool1d(kernel_size = 2)   #same formula to keep the dimension size
         self.conv = nn.Conv1d(in_channels = input_size, out_channels = input_size,kernel_size = (3), padding = "same")  
         self.LSTMInitial = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
-        self.fcLast = nn.Linear(hidden_size, 1)
+        self.fcMid = nn.Linear(hidden_size, input_size)
+
+        self.fcLast = nn.Linear(input_size, 1)
     
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, self.hidden_size).to(device)
@@ -113,13 +115,13 @@ class stonks(nn.Module):
         # Forward propagate LSTM
         x = x.permute(1,0)
         print(x.shape)
-        out, _ = self.LSTMInitial(x, (h0, c0))
-        #print(out.shape)
-        out = self.fcLast(out)
-        return out
+        x, _ = self.LSTMInitial(x, (h0, c0))
+        #fc
+        x = self.fcMid(x)
 
-# Determine the input size from the shape of X_train
-input_size = X_train.shape[1]
+        print(x.shape)
+        out = self.fcLast(x)
+        return out
 
 # Instantiate the model and move it to the GPU
 model = stonks(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers).to(device)
