@@ -1,0 +1,248 @@
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+# Set device to GPU 1
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device: ", device)
+
+# Load data
+sp500 = yf.Ticker("JPM").history(period="max")
+sp500["Tomorrow"] = sp500["Close"].shift(-1)
+sp500["Target"] = (sp500["Tomorrow"] > sp500["Close"]).astype(int)
+sp500 = sp500.loc["1990-01-01":].copy()
+
+# Add technical indicators
+def add_technical_indicators(sp500, horizons):
+    for horizon in horizons:
+        rolling_averages = sp500.rolling(horizon).mean()
+        sp500[f"Close_Ratio_{horizon}"] = sp500["Close"] / rolling_averages["Close"]
+        sp500[f"Trend_{horizon}"] = sp500.shift(1).rolling(horizon).sum()["Target"]
+        sp500[f"EMA_COLUMN_{horizon}"] = sp500["Close"].ewm(span=horizon, adjust=False).mean()
+        sp500[f'SMA_{horizon}'] = sp500['Close'].rolling(window=horizon).mean()
+        sp500[f'EMA_{horizon}'] = sp500['Close'].ewm(span=horizon, adjust=False).mean()
+        
+        delta = sp500['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=horizon).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=horizon).mean()
+        rs = gain / loss
+        sp500[f'RSI_{horizon}'] = 100 - (100 / (1 + rs))
+        
+        ema_fast = sp500['Close'].ewm(span=horizon//2, adjust=False).mean()
+        ema_slow = sp500['Close'].ewm(span=horizon, adjust=False).mean()
+        sp500[f'MACD_{horizon}'] = ema_fast - ema_slow
+        sp500[f'MACD_signal_{horizon}'] = sp500[f'MACD_{horizon}'].ewm(span=9, adjust=False).mean()
+        sp500[f'MACD_diff_{horizon}'] = sp500[f'MACD_{horizon}'] - sp500[f'MACD_signal_{horizon}']
+        
+        rolling_std = sp500['Close'].rolling(window=horizon).std()
+        sp500[f'BB_high_{horizon}'] = sp500[f'SMA_{horizon}'] + (rolling_std * 2)
+        sp500[f'BB_low_{horizon}'] = sp500[f'SMA_{horizon}'] - (rolling_std * 2)
+        
+        high_low = sp500['High'] - sp500['Low']
+        high_close = (sp500['High'] - sp500['Close'].shift()).abs()
+        low_close = (sp500['Low'] - sp500['Close'].shift()).abs()
+        tr = high_low.combine(high_close, max).combine(low_close, max)
+        sp500[f'ATR_{horizon}'] = tr.rolling(window=horizon).mean()
+        
+        obv = (sp500['Volume'] * ((sp500['Close'] - sp500['Close'].shift()) / sp500['Close'].shift())).fillna(0)
+        sp500[f'OBV_{horizon}'] = obv.cumsum()
+    
+    sp500.dropna(inplace=True)
+    return sp500
+
+horizons = [2, 5, 60, 250, 1000]
+sp500 = add_technical_indicators(sp500, horizons)
+
+# Split data using numpy
+train_size = int(len(sp500) * 0.9)
+test_size = len(sp500) - train_size
+
+train_data, test_data = sp500[:train_size], sp500[train_size:]
+
+X_train = train_data.drop(columns=['Close', 'Tomorrow', 'Target']).values
+y_train = train_data['Target'].values
+X_test = test_data.drop(columns=['Close', 'Tomorrow', 'Target']).values
+y_test = test_data['Target'].values
+
+# Convert to torch tensors and reshape to match LSTM input shape (batch_size, seq_length, num_features)
+X_train = torch.tensor(X_train, dtype=torch.float32).to(device)
+X_test = torch.tensor(X_test, dtype=torch.float32).to(device)
+
+y_train = torch.tensor(y_train, dtype=torch.float32).view(-1, 1).to(device)
+y_test = torch.tensor(y_test, dtype=torch.float32).view(-1, 1).to(device)
+
+x_pred = torch.tensor(X_train[-1], dtype=torch.float32).view(1,-1).to(device)
+
+# Check dimensions
+print(X_train.shape, X_test.shape, y_train.shape, y_test.shape, x_pred.shape)
+
+hidden_size = 256
+num_layers = 2
+learning_rate = 0.005
+batch_size = 64
+input_size = 71
+
+class miniLayer(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers):
+        super(miniLayer, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.convMid = nn.Conv1d(in_channels = input_size, out_channels = hidden_size*3,kernel_size = (12), padding = "same") 
+        self.convLast = nn.Conv1d(in_channels = hidden_size*3, out_channels = input_size,kernel_size = (24), padding = "same") 
+
+        self.LSTM1= nn.LSTM(input_size=input_size, hidden_size=hidden_size*3, num_layers=num_layers, batch_first=True)
+
+        self.fcMid1 = nn.Linear(hidden_size, hidden_size * 5)
+        self.fcMid2 = nn.Linear(hidden_size * 5, hidden_size)
+        self.fcMid3 = nn.Linear(hidden_size, input_size)
+
+     
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, self.hidden_size*3).to(device)
+        c0 = torch.zeros(self.num_layers, self.hidden_size*3).to(device)
+        
+        x = x.permute(1,0)
+        x = F.relu(self.convMid(x))
+        x = F.relu(self.convLast(x))
+
+        x = x.permute(1,0)
+        print(x.shape)
+        x, _ = self.LSTM1(x, (h0, c0))
+    
+        x = self.fcMid1(x)
+        x = self.fcMid2(x)
+        x = self.fcMid3(x)
+
+        return x
+    
+
+class miniLayer(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers):
+        super(miniLayer, self).__init__()
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.conv = nn.Conv1d(in_channels = input_size, out_channels = input_size,kernel_size = (3), padding = "same")  
+        self.LSTMInitial = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+        self.fcMid1 = nn.Linear(hidden_size, hidden_size*3)
+        self.fcMid2 = nn.Linear(hidden_size*3, input_size)
+
+     
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, self.hidden_size).to(device)
+        c0 = torch.zeros(self.num_layers, self.hidden_size).to(device)
+        x = x.permute(1,0)
+        x = F.relu(self.conv(x))
+        x = x.permute(1,0)
+        x, _ = self.LSTMInitial(x, (h0, c0))
+        x = F.relu(x)
+        x = F.relu(self.fcMid1(x))
+        x = F.relu(self.fcMid2(x))
+
+        return x
+    
+class stonks(nn.Module):
+    def __init__(self):
+        super(stonks, self).__init__()
+        self.layersList = nn.ModuleList([miniLayer(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers) for i in range(10)])
+        
+        self.fcLast = nn.Linear(input_size, 1)
+
+    def forward(self,x):
+
+        for i,l in enumerate(self.layersList):
+            x = self.layersList[i//3](x) + self.layersList[i//2](x) + l(x)
+        out = self.fcLast(x)
+        return out
+    
+    
+
+# Instantiate the model and move it to the GPU
+model = stonks().to(device)
+
+# Define loss function and optimizer
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+# Training
+epochs = 5
+for epoch in range(epochs):
+    model.train()
+    optimizer.zero_grad()
+    outputs = model(X_train)
+    loss = criterion(outputs, y_train)
+    loss.backward()
+    optimizer.step()
+    if (epoch + 1) % 1 == 0:  # Print every n epochs
+        print(f"Epoch [{epoch+1}/{epochs}], Loss: {loss.item():.4f}")
+
+def check_accuracy(x, y, model):
+    num_correct = 0
+    num_samples = 0
+    num_wrong = 0
+    true_positive = 0
+    true_negative = 0
+    false_positive = 0
+    false_negative = 0
+
+    # Set model to eval
+    model.eval()
+
+    with torch.no_grad():
+        x = x.to(device)
+        y = y.to(device)
+        preds = model(x)
+        num_samples = y.size(0)
+
+        for i in range(num_samples):
+            if (preds[i] > 0.5 and y[i] == 1):
+                num_correct += 1
+                true_positive += 1
+            elif (preds[i] <= 0.5 and y[i] == 0):
+                num_correct += 1
+                true_negative += 1
+            elif (preds[i] > 0.5 and y[i] == 0):
+                false_positive += 1
+                num_wrong += 1
+            elif (preds[i] <= 0.5 and y[i] == 1):
+                false_negative += 1
+                num_wrong += 1
+
+    accuracy = num_correct / num_samples
+
+    # Confusion matrix as a pandas DataFrame
+    confusion_matrix = pd.DataFrame({
+        'Predicted Positive': [true_positive, false_positive],
+        'Predicted Negative': [false_negative, true_negative]
+    }, index=['Actual Positive', 'Actual Negative'])
+
+    # Set model back to train
+    model.train()
+
+    return accuracy, confusion_matrix
+
+accuracyTrain, confusion_matrixTrain = check_accuracy(X_train,y_train,model)
+accuracyTest, confusion_matrixTest = check_accuracy(X_test,y_test,model)
+
+
+print(f"Accuracy on training set: {accuracyTrain * 100:.2f}%")
+print(f"Accuracy on test set: {accuracyTest * 100:.2f}%")
+
+print("____________________Confusion Matrix Train____________________")
+print(confusion_matrixTrain)
+
+print("____________________Confusion Matrix Test____________________")
+print(confusion_matrixTest)
+
+
+with torch.no_grad():
+    predictions = model(x_pred)
+    print("Predicted Labels:", predictions)
+    model.train()
+
+
+# Saving the model
+torch.save(model.state_dict(), 'stock_market_prediction_model.pth')
